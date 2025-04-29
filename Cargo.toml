@@ -1,0 +1,8 @@
+[package]
+name = "stockchain"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libp2p = "0.55.0"
+ops = "0.6.0"
