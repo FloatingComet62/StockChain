@@ -1,27 +1,11 @@
-// Copyright 2018 Parity Technologies (UK) Ltd.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 use futures::stream::StreamExt;
 use std::error::Error;
-use stockchain::gossip::Gossip;
 use tokio::{io, io::AsyncBufReadExt, select};
+
+use stockchain::{
+    communication::{get_message_via_data, InteractionMessage},
+    gossip::{Gossip, GossipEvent}
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -36,7 +20,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         select! {
             Ok(Some(line)) = stdin.next_line() => {
-                if let Err(e) = gossip.gossip(line.as_str(), gossip.topics[0].clone()) {
+                if let Err(e) = gossip.gossip(&parse_command(line.as_str()), gossip.topics[0].1.clone()) {
                     println!("Publish error: {e:?}");
                 }
             }
@@ -44,8 +28,45 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 let Some(action) = gossip.handle_event(event) else {
                     continue;
                 };
-                println!("Gossip event: {action}");
+                let GossipEvent::Message(data) = action else {
+                    println!("Event: {action:?}");
+                    continue;
+                };
+                let message = match get_message_via_data(&data) {
+                    Ok(message) => message,
+                    Err(e) => {
+                        println!("Error parsing message: {e:?}");
+                        continue;
+                    }
+                };
+                match message {
+                    InteractionMessage::Ping => {
+                        println!("Ping received");
+                    }
+                    InteractionMessage::SharedSecretExchange(shared_secret_exchange) => {
+                        println!("Shared secret exchange: {:?}", shared_secret_exchange);
+                    }
+                    InteractionMessage::SharedSecretExchangeResponse(response) => {
+                        println!("Shared secret exchange response: {:?}", response);
+                    }
+                    InteractionMessage::SharedSecretCommunication(communication) => {
+                        println!("Shared secret communication: {:?}", communication);
+                    }
+                    InteractionMessage::Other => {
+                        println!("Other message received");
+                    }
+                }
             }
         }
+    }
+}
+
+fn parse_command(command: &str) -> InteractionMessage {
+    match command {
+        "ping" => InteractionMessage::Ping,
+        "shared_secret_exchange" => todo!(),
+        "shared_secret_exchange_response" => InteractionMessage::SharedSecretExchangeResponse("response".to_string()),
+        "shared_secret_communication" => InteractionMessage::SharedSecretCommunication("communication".to_string()),
+        _ => InteractionMessage::Other,
     }
 }

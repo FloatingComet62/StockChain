@@ -1,5 +1,5 @@
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{hash_map::DefaultHasher, HashMap},
     error::Error,
     fmt::Display,
     hash::{Hash, Hasher},
@@ -12,33 +12,81 @@ use libp2p::{
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
+use oqs::sig::{Sig, Algorithm};
+use rand::{rngs::ThreadRng, fill};
 use tokio::io;
 use tracing_subscriber::EnvFilter;
 
-// We create a custom network behaviour that combines Gossipsub and Mdns.
+use crate::communication::InteractionMessage;
+
+
+static NOUNCE_LEN: usize = 16;
+
 #[derive(NetworkBehaviour)]
 pub struct MyBehaviour {
     gossipsub: gossipsub::Behaviour,
     mdns: mdns::tokio::Behaviour,
 }
 
-pub struct Gossip {
-    pub swarm: libp2p::Swarm<MyBehaviour>,
-    pub topics: Vec<gossipsub::IdentTopic>,
+#[derive(Debug)]
+pub enum GossipSendError {
+    PublishError(gossipsub::PublishError),
+    SerdeError(serde_json::Error),
+}
+impl From<gossipsub::PublishError> for GossipSendError {
+    fn from(err: gossipsub::PublishError) -> Self {
+        GossipSendError::PublishError(err)
+    }
+}
+impl From<serde_json::Error> for GossipSendError {
+    fn from(err: serde_json::Error) -> Self {
+        GossipSendError::SerdeError(err)
+    }
 }
 
+pub struct Gossip {
+    pub swarm: libp2p::Swarm<MyBehaviour>,
+    pub topics: Vec<(String, gossipsub::IdentTopic)>,
+    pub private_key: oqs::sig::SecretKey,
+    pub public_key: oqs::sig::PublicKey,
+    pub shared_secret: HashMap<libp2p::PeerId, oqs::kem::SharedSecret>,
+    pub nounce_thread: ThreadRng,
+}
+
+#[derive(Debug)]
+pub enum Room {
+    PublicRoom(String),
+    DirectMessage(String),
+}
+impl Display for Room {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Room::PublicRoom(name) => write!(f, "PublicRoom({})", name),
+            Room::DirectMessage(name) => write!(f, "DirectMessage({})", name),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct MessageData {
+    pub peer: libp2p::PeerId,
+    pub message: String,
+    pub room: Room,
+}
+
+#[derive(Debug)]
 pub enum GossipEvent {
     NewConnection(Vec<libp2p::PeerId>),
     Disconnection(Vec<libp2p::PeerId>),
-    Message(libp2p::PeerId, String),
+    Message(MessageData),
 }
 impl Display for GossipEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GossipEvent::NewConnection(peers) => write!(f, "New connection: {:?}", peers),
             GossipEvent::Disconnection(peers) => write!(f, "Disconnection: {:?}", peers),
-            GossipEvent::Message(peer_id, message) => {
-                write!(f, "Message from {}: {}", peer_id, message)
+            GossipEvent::Message(data) => {
+                write!(f, "Message from {}({}): {}", data.peer, data.room, data.message)
             }
         }
     }
@@ -88,16 +136,32 @@ impl Gossip {
                 Ok(MyBehaviour { gossipsub, mdns })
             })?
             .build();
+            
+        let sig = Sig::new(Algorithm::MlDsa87)?;
+        let (public_key, private_key) = sig.keypair()?;
         Ok(Self {
             swarm,
             topics: Vec::new(),
+            private_key,
+            public_key,
+            shared_secret: HashMap::new(),
+            nounce_thread: rand::rng(),
         })
     }
-    pub fn join_room(&mut self, topic: &str) -> Result<(), Box<dyn Error>> {
-        let topic = gossipsub::IdentTopic::new(topic);
-        self.topics.push(topic.clone());
+    pub fn keys(&self) -> (oqs::sig::PublicKey, oqs::sig::SecretKey) {
+        (self.public_key.clone(), self.private_key.clone())
+    }
+    pub fn join_room(&mut self, topic_str: &str) -> Result<(), Box<dyn Error>> {
+        let topic = gossipsub::IdentTopic::new(topic_str);
+        self.topics.push((topic_str.to_string(), topic.clone()));
 
         self.swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
+        Ok(())
+    }
+    pub fn leave_room(&mut self, topic_str: &str) -> Result<(), Box<dyn Error>> {
+        let topic = gossipsub::IdentTopic::new(topic_str);
+        self.topics.retain(|(t, _)| t != topic_str);
+        let _ = self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic);
         Ok(())
     }
     pub fn open_ears(&mut self) -> Result<(), Box<dyn Error>> {
@@ -106,7 +170,7 @@ impl Gossip {
         // note that since the peer id is public, this room is not for sensitive messages.
         // encrypted messages can be used to communicate privately.
         // note: also encrypted messages can be used to establish a private room as well.
-        //! CHECK BEFORE FURTHER IMPLEMENTATION: IS IT POSSIBLE TO LIST ALL THE ROOMS
+        //! CHECK BEFORE FURTHER IMPLEMENTATION: IS IT POSSIBLE TO LIST ALL THE ROOMS = GOOD THING I DID, YES THEY CAN
 
         self.join_room(&self.swarm.local_peer_id().to_string())?;
         
@@ -117,13 +181,28 @@ impl Gossip {
     }
     pub fn gossip(
         &mut self,
-        message: &str,
+        message: &InteractionMessage,
         topic: gossipsub::IdentTopic,
-    ) -> Result<MessageId, gossipsub::PublishError> {
-        self.swarm
+    ) -> Result<MessageId, GossipSendError> {
+        let data = self.add_nounce(serde_json::to_string(message)?.as_bytes());
+        Ok(self.swarm
             .behaviour_mut()
             .gossipsub
-            .publish(topic, message.as_bytes())
+            .publish(topic, data)?)
+    }
+    // Duplicate messages are apparantly not allowed, so we need to add a nounce to the message
+    pub fn add_nounce(&self, message: &[u8]) -> Vec<u8> {
+        let mut nounce = [0; NOUNCE_LEN];
+        fill(&mut nounce);
+        let mut data = Vec::with_capacity(message.len() + nounce.len());
+        data.extend_from_slice(&nounce);
+        data.extend_from_slice(message);
+        data
+    }
+    pub fn remove_nounce(message: &[u8]) -> Vec<u8> {
+        let mut data = Vec::with_capacity(message.len() - NOUNCE_LEN);
+        data.extend_from_slice(&message[NOUNCE_LEN..]);
+        data
     }
     pub fn handle_event(&mut self, event: SwarmEvent<MyBehaviourEvent>) -> Option<GossipEvent> {
         match event {
@@ -154,8 +233,13 @@ impl Gossip {
                 message_id: _,
                 message,
             })) => {
-                let message = String::from_utf8_lossy(&message.data);
-                return Some(GossipEvent::Message(peer_id, message.to_string()));
+                let data = Self::remove_nounce(&message.data);
+                let content = String::from_utf8_lossy(&data);
+                return Some(GossipEvent::Message(MessageData {
+                    peer: peer_id,
+                    message: content.to_string(),
+                    room: self.get_topic_name_from_hash(message.topic),
+                }));
             }
             SwarmEvent::NewListenAddr { address, .. } => {
                 println!("Local node is listening on {address}");
@@ -163,5 +247,19 @@ impl Gossip {
             _ => {}
         }
         None
+    }
+    pub fn get_topic_name_from_hash(&self, topic: gossipsub::TopicHash) -> Room {
+        for t in &self.topics {
+            if t.1.hash() == topic {
+                return self.get_room_from_topic(t.0.clone());
+            }
+        }
+        panic!("Topic not found");
+    }
+    pub fn get_room_from_topic(&self, topic: String) -> Room {
+        if topic == self.swarm.local_peer_id().to_string() {
+            return Room::DirectMessage(topic);
+        }
+        Room::PublicRoom(topic)
     }
 }
