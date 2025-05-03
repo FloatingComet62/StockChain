@@ -6,6 +6,7 @@ use crate::gossip::{MessageData, Room};
 #[derive(Serialize, Deserialize)]
 pub enum InteractionMessage {
     Ping,
+    RequestPublicKey,
     SharedSecretExchange(SharedSecretExchange),
     SharedSecretExchangeResponse(String),
     SharedSecretCommunication(String),
@@ -14,6 +15,7 @@ pub enum InteractionMessage {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SharedSecretExchange {
+    // rethink this
     pub pk: PublicKey,
     pub sig: Signature,
 }
@@ -26,6 +28,7 @@ pub fn get_message_via_data(
         serde_json::from_str(&message_data.message).unwrap_or(InteractionMessage::Other)
     ) {
         (_, InteractionMessage::Ping) => Ok(InteractionMessage::Ping),
+        (_, InteractionMessage::RequestPublicKey) => Ok(InteractionMessage::RequestPublicKey),
         (Room::PublicRoom(_), _) => Ok(InteractionMessage::Other),
         (Room::DirectMessage(_), InteractionMessage::SharedSecretExchange(shared_secret_exchange)) => Ok(InteractionMessage::SharedSecretExchange(shared_secret_exchange)),
         (Room::DirectMessage(_), InteractionMessage::SharedSecretExchangeResponse(_)) => todo!(),

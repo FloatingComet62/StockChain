@@ -52,6 +52,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     InteractionMessage::SharedSecretCommunication(communication) => {
                         println!("Shared secret communication: {:?}", communication);
                     }
+                    InteractionMessage::RequestPublicKey => {
+                        println!("Request public key received");
+                    }
                     InteractionMessage::Other => {
                         println!("Other message received");
                     }
@@ -64,6 +67,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 fn parse_command(command: &str) -> InteractionMessage {
     match command {
         "ping" => InteractionMessage::Ping,
+        "request_public_key" => InteractionMessage::RequestPublicKey,
         "shared_secret_exchange" => todo!(),
         "shared_secret_exchange_response" => InteractionMessage::SharedSecretExchangeResponse("response".to_string()),
         "shared_secret_communication" => InteractionMessage::SharedSecretCommunication("communication".to_string()),

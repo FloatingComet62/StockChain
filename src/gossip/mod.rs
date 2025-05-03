@@ -1,26 +1,27 @@
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
+    collections::hash_map::DefaultHasher,
     error::Error,
     fmt::Display,
     hash::{Hash, Hasher},
     time::Duration,
 };
-
 use libp2p::{
     gossipsub::{self, MessageId},
     mdns, noise,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
-use oqs::sig::{Sig, Algorithm};
-use rand::{rngs::ThreadRng, fill};
 use tokio::io;
 use tracing_subscriber::EnvFilter;
 
 use crate::communication::InteractionMessage;
 
+pub mod nonce;
+pub mod secret;
 
-static NOUNCE_LEN: usize = 16;
+use nonce::Nonce;
+use secret::Secret;
+
 
 #[derive(NetworkBehaviour)]
 pub struct MyBehaviour {
@@ -47,10 +48,8 @@ impl From<serde_json::Error> for GossipSendError {
 pub struct Gossip {
     pub swarm: libp2p::Swarm<MyBehaviour>,
     pub topics: Vec<(String, gossipsub::IdentTopic)>,
-    pub private_key: oqs::sig::SecretKey,
-    pub public_key: oqs::sig::PublicKey,
-    pub shared_secret: HashMap<libp2p::PeerId, oqs::kem::SharedSecret>,
-    pub nounce_thread: ThreadRng,
+    pub secret: Secret,
+    pub nonce: Nonce,
 }
 
 #[derive(Debug)]
@@ -137,19 +136,12 @@ impl Gossip {
             })?
             .build();
             
-        let sig = Sig::new(Algorithm::MlDsa87)?;
-        let (public_key, private_key) = sig.keypair()?;
         Ok(Self {
             swarm,
             topics: Vec::new(),
-            private_key,
-            public_key,
-            shared_secret: HashMap::new(),
-            nounce_thread: rand::rng(),
+            secret: Secret::new()?,
+            nonce: Nonce::new(),
         })
-    }
-    pub fn keys(&self) -> (oqs::sig::PublicKey, oqs::sig::SecretKey) {
-        (self.public_key.clone(), self.private_key.clone())
     }
     pub fn join_room(&mut self, topic_str: &str) -> Result<(), Box<dyn Error>> {
         let topic = gossipsub::IdentTopic::new(topic_str);
@@ -184,25 +176,11 @@ impl Gossip {
         message: &InteractionMessage,
         topic: gossipsub::IdentTopic,
     ) -> Result<MessageId, GossipSendError> {
-        let data = self.add_nounce(serde_json::to_string(message)?.as_bytes());
+        let data = self.nonce.add_nonce(serde_json::to_string(message)?.as_bytes());
         Ok(self.swarm
             .behaviour_mut()
             .gossipsub
             .publish(topic, data)?)
-    }
-    // Duplicate messages are apparantly not allowed, so we need to add a nounce to the message
-    pub fn add_nounce(&self, message: &[u8]) -> Vec<u8> {
-        let mut nounce = [0; NOUNCE_LEN];
-        fill(&mut nounce);
-        let mut data = Vec::with_capacity(message.len() + nounce.len());
-        data.extend_from_slice(&nounce);
-        data.extend_from_slice(message);
-        data
-    }
-    pub fn remove_nounce(message: &[u8]) -> Vec<u8> {
-        let mut data = Vec::with_capacity(message.len() - NOUNCE_LEN);
-        data.extend_from_slice(&message[NOUNCE_LEN..]);
-        data
     }
     pub fn handle_event(&mut self, event: SwarmEvent<MyBehaviourEvent>) -> Option<GossipEvent> {
         match event {
@@ -233,7 +211,7 @@ impl Gossip {
                 message_id: _,
                 message,
             })) => {
-                let data = Self::remove_nounce(&message.data);
+                let data = Nonce::remove_nonce(&message.data);
                 let content = String::from_utf8_lossy(&data);
                 return Some(GossipEvent::Message(MessageData {
                     peer: peer_id,

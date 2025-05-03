@@ -15,3 +15,4 @@ oqs = { version = "0.11.0", features = ["serde"] }
 serde = "1.0.219"
 serde_json = "1.0.140"
 rand = "0.9.1"
+aes-gcm = "0.10.3"
