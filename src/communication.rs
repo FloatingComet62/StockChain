@@ -1,4 +1,4 @@
-use oqs::sig::{PublicKey, Signature};
+use oqs::{sig, kem};
 use serde::{Deserialize, Serialize};
 use serde_json::Error;
 use crate::gossip::{MessageData, Room};
@@ -8,16 +8,22 @@ pub enum InteractionMessage {
     Ping,
     RequestPublicKey,
     SharedSecretExchange(SharedSecretExchange),
-    SharedSecretExchangeResponse(String),
+    SharedSecretExchangeResponse(SharedSecretExchangeResponse),
     SharedSecretCommunication(String),
     Other
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SharedSecretExchange {
-    // rethink this
-    pub pk: PublicKey,
-    pub sig: Signature,
+    pub kem_pk: kem::PublicKey,
+    pub signature: sig::Signature,
+    pub pk: sig::PublicKey,
+}
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SharedSecretExchangeResponse {
+    pub kem_ct: kem::Ciphertext,
+    pub signature: sig::Signature,
+    pub pk: sig::PublicKey,
 }
 
 pub fn get_message_via_data(
@@ -30,9 +36,9 @@ pub fn get_message_via_data(
         (_, InteractionMessage::Ping) => Ok(InteractionMessage::Ping),
         (_, InteractionMessage::RequestPublicKey) => Ok(InteractionMessage::RequestPublicKey),
         (Room::PublicRoom(_), _) => Ok(InteractionMessage::Other),
-        (Room::DirectMessage(_), InteractionMessage::SharedSecretExchange(shared_secret_exchange)) => Ok(InteractionMessage::SharedSecretExchange(shared_secret_exchange)),
-        (Room::DirectMessage(_), InteractionMessage::SharedSecretExchangeResponse(_)) => todo!(),
-        (Room::DirectMessage(_), InteractionMessage::SharedSecretCommunication(_)) => todo!(),
-        (Room::DirectMessage(_), InteractionMessage::Other) => Ok(InteractionMessage::Other),
+        (_, InteractionMessage::SharedSecretExchange(e)) => Ok(InteractionMessage::SharedSecretExchange(e)),
+        (_, InteractionMessage::SharedSecretExchangeResponse(e)) => Ok(InteractionMessage::SharedSecretExchangeResponse(e)),
+        (_, InteractionMessage::SharedSecretCommunication(e)) => Ok(InteractionMessage::SharedSecretCommunication(e)),
+        (_, InteractionMessage::Other) => Ok(InteractionMessage::Other),
     }
 }

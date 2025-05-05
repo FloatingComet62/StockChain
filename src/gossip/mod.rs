@@ -1,15 +1,15 @@
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{hash_map::DefaultHasher, HashSet},
     error::Error,
     fmt::Display,
     hash::{Hash, Hasher},
     time::Duration,
 };
 use libp2p::{
-    gossipsub::{self, MessageId},
+    gossipsub::{self, IdentTopic, MessageId},
     mdns, noise,
     swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux,
+    tcp, yamux, PeerId,
 };
 use tokio::io;
 use tracing_subscriber::EnvFilter;
@@ -48,6 +48,7 @@ impl From<serde_json::Error> for GossipSendError {
 pub struct Gossip {
     pub swarm: libp2p::Swarm<MyBehaviour>,
     pub topics: Vec<(String, gossipsub::IdentTopic)>,
+    pub peer_ids: HashSet<PeerId>,
     pub secret: Secret,
     pub nonce: Nonce,
 }
@@ -139,9 +140,21 @@ impl Gossip {
         Ok(Self {
             swarm,
             topics: Vec::new(),
+            peer_ids: HashSet::new(),
             secret: Secret::new()?,
             nonce: Nonce::new(),
         })
+    }
+    pub fn peer_id(&self) -> PeerId {
+        self.swarm.local_peer_id().clone()
+    }
+    pub fn fetch_room_from_name(&self, topic_self: &str) -> Option<IdentTopic> {
+        for (room_name, room) in self.topics.iter() {
+            if room_name == topic_self {
+                return Some(room.clone());
+            }
+        }
+        None
     }
     pub fn join_room(&mut self, topic_str: &str) -> Result<(), Box<dyn Error>> {
         let topic = gossipsub::IdentTopic::new(topic_str);
@@ -164,7 +177,12 @@ impl Gossip {
         // note: also encrypted messages can be used to establish a private room as well.
         //! CHECK BEFORE FURTHER IMPLEMENTATION: IS IT POSSIBLE TO LIST ALL THE ROOMS = GOOD THING I DID, YES THEY CAN
 
-        self.join_room(&self.swarm.local_peer_id().to_string())?;
+        let last_five_id_char = {
+            let s = self.peer_id().to_string();
+            let n = s.char_indices().nth_back(4).unwrap().0;
+            s[n..].to_string()
+        };
+        self.join_room(&last_five_id_char)?;
         
         // Listen on all interfaces and whatever port the OS assigns
         // self.swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
@@ -193,6 +211,9 @@ impl Gossip {
                         .add_explicit_peer(&peer_id);
                     peers.push(peer_id);
                 }
+                for peer in peers.iter() {
+                    self.peer_ids.insert(peer.clone());
+                }
                 return Some(GossipEvent::NewConnection(peers));
             }
             SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
@@ -204,6 +225,9 @@ impl Gossip {
                         .remove_explicit_peer(&peer_id);
                     peers.push(peer_id);
                 }
+                for peer in peers.iter() {
+                    self.peer_ids.remove(peer);
+                }
                 return Some(GossipEvent::Disconnection(peers));
             }
             SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
@@ -211,6 +235,21 @@ impl Gossip {
                 message_id: _,
                 message,
             })) => {
+                let is_public_room = message.topic.to_string().starts_with("public_");
+                let is_message_by_the_dm_op = peer_id.to_string().contains(&message.topic.to_string());
+                let is_message_in_self_dm = self.peer_id().to_string().contains(&message.topic.to_string());
+                // Messages to ignore
+                // Private Room: Other DM's, other's messages
+                // Messages to allow
+                // Public Rooms
+                // Private Room: DM OP's messages
+                // FTF: Valid
+                // FFF: Invalid
+                // T__: Valid
+                if !is_public_room && !is_message_by_the_dm_op && !is_message_in_self_dm {
+                    // probably someone asking the OP something, we don't care
+                    return None;
+                }
                 let data = Nonce::remove_nonce(&message.data);
                 let content = String::from_utf8_lossy(&data);
                 return Some(GossipEvent::Message(MessageData {
