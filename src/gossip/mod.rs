@@ -168,6 +168,9 @@ impl Gossip {
     pub fn peer_id(&self) -> PeerId {
         self.swarm.local_peer_id().clone()
     }
+    pub fn get_peer_from_room_name(&self, room_name: &str) -> Option<&PeerId> {
+        self.peer_ids.iter().find(|id| id.to_string().contains(&room_name))
+    }
     pub fn fetch_room_from_name(&self, topic_self: &str) -> Option<IdentTopic> {
         for (room_name, room) in self.topics.iter() {
             if room_name == topic_self {
@@ -297,7 +300,7 @@ impl Gossip {
     }
 }
 
-fn generate_room_name(peer_id: PeerId) -> String {
+pub fn generate_room_name(peer_id: PeerId) -> String {
     // let mut hasher = DefaultHasher::new();
     // peer_id.hash(&mut hasher);
     // let hash = hasher.finish();

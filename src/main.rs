@@ -4,8 +4,8 @@ use std::error::Error;
 use tokio::{io, io::AsyncBufReadExt, select};
 
 use stockchain::{
-    communication::{get_message_via_data, InteractionMessage},
-    gossip::{Gossip, GossipEvent, MyBehaviourEvent}
+    communication::{get_message_via_data, InteractionMessage, SharedSecretExchange, SharedSecretExchangeResponse},
+    gossip::{generate_room_name, Gossip, GossipEvent, MyBehaviourEvent}
 };
 
 #[tokio::main]
@@ -49,7 +49,7 @@ fn handle_event(gossip: &mut Gossip, event: SwarmEvent<MyBehaviourEvent>) {
         println!("Event: {action:?}");
         return;
     };
-    let message = match get_message_via_data(&data) {
+    let message = match get_message_via_data(gossip, &data) {
         Ok(message) => message,
         Err(e) => {
             println!("Error parsing message: {e:?}");
@@ -61,13 +61,59 @@ fn handle_event(gossip: &mut Gossip, event: SwarmEvent<MyBehaviourEvent>) {
             println!("Ping received");
         }
         InteractionMessage::SharedSecretExchange(shared_secret_exchange) => {
-            println!("Shared secret exchange: {:?}", shared_secret_exchange);
+            println!("Shared secret exchange");
+            let Ok(response) = gossip.secret.receive_shared_secret(
+                data.peer,
+                shared_secret_exchange.kem_pk,
+                shared_secret_exchange.signature,
+                shared_secret_exchange.pk
+            ) else {
+                println!("Error receiving shared secret");
+                return;
+            };
+            if let Err(e) = gossip.join_room(&generate_room_name(data.peer)) {
+                println!("Error joining room: {e:?}");
+                return;
+            }
+            let room_name = gossip.fetch_room_from_name(&generate_room_name(data.peer));
+            let Some(room_name) = room_name else {
+                println!("Error getting room name");
+                return;
+            };
+            if let Err(e) = gossip.gossip(
+                &InteractionMessage::SharedSecretExchangeResponse(SharedSecretExchangeResponse::new(
+                    response.0,
+                    response.1,
+                    response.2
+                )),
+                room_name,
+            ) {
+                println!("Error sending shared secret exchange response: {e:?}");
+            }
         }
         InteractionMessage::SharedSecretExchangeResponse(response) => {
-            println!("Shared secret exchange response: {:?}", response);
+            println!("Shared secret exchange response");
+            let Err(e) = gossip.secret.receive_shared_secret_response(
+                data.peer,
+                response.kem_ct,
+                response.signature,
+                response.pk
+            ) else {
+                return;
+            };
+            println!("Error receiving shared secret response {e:?}");
         }
         InteractionMessage::SharedSecretCommunication(communication) => {
-            println!("Shared secret communication: {:?}", communication);
+            println!("Shared secret communication");
+            let Ok(data) = gossip.secret.decrypt(
+                data.peer,
+                communication.0,
+                communication.1
+            ) else {
+                println!("Error decrypting data");
+                return;
+            };
+            println!("Decrypted data: {:?}", String::from_utf8(data));
         }
         InteractionMessage::RequestPublicKey => {
             println!("Request public key received");
@@ -94,16 +140,51 @@ fn parse_command(gossip: &mut Gossip, command: &str) -> Option<(InteractionMessa
         return None;
     }
     let cmd= match args[0].as_str() {
-        "ping" => InteractionMessage::Ping,
-        "join_room" => {
+        "ping" | "p" => InteractionMessage::Ping,
+        "join_room" | "jr" => {
             println!("{:?}", gossip.join_room(&args[1]));
             return None;
         },
-        "request_public_key" => InteractionMessage::RequestPublicKey,
-        "shared_secret_exchange" => todo!(),
-        "shared_secret_exchange_response" => todo!(),
-        "shared_secret_communication" => InteractionMessage::SharedSecretCommunication("communication".to_string()),
+        "request_public_key" | "rpk" => InteractionMessage::RequestPublicKey,
+        "shared_secret_exchange" | "sse" => {
+            let Some(peer_id) = gossip.get_peer_from_room_name(&args[1]) else {
+                println!("Invalid peer id");
+                return None;
+            };
+            let Ok((kem_pk, signature, pk)) = gossip.secret.send_shared_secret(
+                *peer_id,
+            ) else {
+                println!("Error sending shared secret");
+                return None;
+            };
+            InteractionMessage::SharedSecretExchange(SharedSecretExchange::new(
+                kem_pk,
+                signature,
+                pk
+            ))
+        },
+        "shared_secret_communication" | "ssc" => {
+            let Some(peer_id) = gossip.get_peer_from_room_name(&args[1]) else {
+                println!("Invalid peer id");
+                return None;
+            };
+            let Ok(data) = gossip.secret.encrypt(
+                *peer_id,
+                get_msg(&args).as_bytes()
+            ) else {
+                println!("Error encrypting data");
+                return None;
+            };
+            InteractionMessage::SharedSecretCommunication(data) 
+        },
         _ => InteractionMessage::Other("fuck".to_string()),
     };
     Some((cmd, args[1].clone()))
+}
+
+fn get_msg(args: &Vec<String>) -> String {
+    if args.len() < 3 {
+        return "BLANK_MSG".to_string();
+    }
+    args[2..].join(" ")
 }
