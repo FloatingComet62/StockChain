@@ -71,9 +71,18 @@ fn handle_event(gossip: &mut Gossip, event: SwarmEvent<MyBehaviourEvent>) {
         }
         InteractionMessage::RequestPublicKey => {
             println!("Request public key received");
+            if let Err(e) = gossip.gossip(
+                &InteractionMessage::ReplyPublicKey(gossip.secret.public_key.clone()),
+                gossip.fetch_room_from_name(&data.room.name()).unwrap(),
+            ) {
+                println!("Error sending public key: {e:?}");
+            }
         }
-        InteractionMessage::Other => {
-            println!("Other message received");
+        InteractionMessage::ReplyPublicKey(public_key) => {
+            println!("Reply public key received: {:?}", public_key);
+        }
+        InteractionMessage::Other(e) => {
+            println!("Other message received: {:?}", e);
         }
     }
 }
@@ -94,7 +103,7 @@ fn parse_command(gossip: &mut Gossip, command: &str) -> Option<(InteractionMessa
         "shared_secret_exchange" => todo!(),
         "shared_secret_exchange_response" => todo!(),
         "shared_secret_communication" => InteractionMessage::SharedSecretCommunication("communication".to_string()),
-        _ => InteractionMessage::Other,
+        _ => InteractionMessage::Other("fuck".to_string()),
     };
     Some((cmd, args[1].clone()))
 }

@@ -66,6 +66,26 @@ impl Display for Room {
         }
     }
 }
+impl Room {
+    pub fn name(&self) -> String {
+        match self {
+            Room::PublicRoom(name) => name.clone(),
+            Room::DirectMessage(name) => name.clone(),
+        }
+    }
+    pub fn is_public(&self) -> bool {
+        match self {
+            Room::PublicRoom(_) => true,
+            Room::DirectMessage(_) => false,
+        }
+    }
+    pub fn is_direct_message(&self) -> bool {
+        match self {
+            Room::PublicRoom(_) => false,
+            Room::DirectMessage(_) => true,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct MessageData {
@@ -177,11 +197,7 @@ impl Gossip {
         // note: also encrypted messages can be used to establish a private room as well.
         //! CHECK BEFORE FURTHER IMPLEMENTATION: IS IT POSSIBLE TO LIST ALL THE ROOMS = GOOD THING I DID, YES THEY CAN
 
-        let last_five_id_char = {
-            let s = self.peer_id().to_string();
-            let n = s.char_indices().nth_back(4).unwrap().0;
-            s[n..].to_string()
-        };
+        let last_five_id_char = generate_room_name(self.peer_id());
         self.join_room(&last_five_id_char)?;
         
         // Listen on all interfaces and whatever port the OS assigns
@@ -274,9 +290,19 @@ impl Gossip {
         panic!("Topic not found");
     }
     pub fn get_room_from_topic(&self, topic: String) -> Room {
-        if topic == self.swarm.local_peer_id().to_string() {
-            return Room::DirectMessage(topic);
+        if topic.starts_with("public_") {
+            return Room::PublicRoom(topic);
         }
-        Room::PublicRoom(topic)
+        Room::DirectMessage(topic)
     }
+}
+
+fn generate_room_name(peer_id: PeerId) -> String {
+    // let mut hasher = DefaultHasher::new();
+    // peer_id.hash(&mut hasher);
+    // let hash = hasher.finish();
+    // format!("public_{hash}")
+    let s = peer_id.to_string();
+    let n = s.char_indices().nth_back(4).unwrap().0;
+    s[n..].to_string()
 }
