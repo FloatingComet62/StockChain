@@ -96,7 +96,7 @@ fn handle_event(gossip: &mut Gossip, event: SwarmEvent<MyBehaviourEvent>) {
             println!("Request public key received");
             data.reply_to_room(
                 gossip,
-                &InteractionMessage::ReplyPublicKey(gossip.secret.public_key.clone())
+                &InteractionMessage::ReplyPublicKey(gossip.secret.public_key.clone()),
             );
         }
         InteractionMessage::ReplyPublicKey(public_key) => {

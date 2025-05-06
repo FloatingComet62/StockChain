@@ -1,18 +1,18 @@
 use std::error::Error;
 
+use libp2p::Multiaddr;
 use libp2p::gossipsub::{Event, Message, TopicHash};
 use libp2p::mdns::Event::{Discovered, Expired};
 use libp2p::swarm::SwarmEvent;
-use libp2p::Multiaddr;
-use libp2p::{gossipsub::IdentTopic, PeerId};
+use libp2p::{PeerId, gossipsub::IdentTopic};
 
 use crate::communication::InteractionMessage;
 
 use super::events::EventHandler;
 use super::message::MessageData;
 use super::nonce::Nonce;
-use super::{Gossip, GossipEvent, MyBehaviourEvent};
 use super::room::{GossipRooms, Room};
+use super::{Gossip, GossipEvent, MyBehaviourEvent};
 
 impl GossipRooms for Gossip {
     fn get_peer_from_room_name(&self, room_name: &str) -> Option<&PeerId> {

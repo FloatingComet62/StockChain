@@ -1,7 +1,5 @@
 use libp2p::{
-    PeerId,
-    gossipsub,
-    mdns, noise,
+    PeerId, gossipsub, mdns, noise,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
@@ -18,11 +16,11 @@ use tracing_subscriber::EnvFilter;
 use crate::communication::InteractionMessage;
 
 pub mod events;
+pub mod impls;
 pub mod message;
 pub mod nonce;
 pub mod room;
 pub mod secret;
-pub mod impls;
 
 use events::EventHandler;
 use message::MessageData;
