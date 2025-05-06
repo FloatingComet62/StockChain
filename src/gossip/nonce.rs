@@ -1,4 +1,4 @@
-use rand::{rngs::ThreadRng, fill};
+use rand::{fill, rngs::ThreadRng};
 
 static NONCE_LEN: usize = 16;
 
@@ -26,7 +26,7 @@ impl Nonce {
         data.extend_from_slice(&message[NONCE_LEN..]);
         data
     }
-    
+
     pub fn add_nonce_wsize(&self, message: &[u8], size: usize) -> Vec<u8> {
         let mut nonce = vec![0; size];
         fill(&mut nonce[..]);
